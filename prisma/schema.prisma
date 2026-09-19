@@ -1,0 +1,419 @@
+// MUSLIM DIGITAL STORE — Database schema
+// PostgreSQL via Prisma
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ---------------------------------------------------------------------------
+// USERS & AUTH
+// ---------------------------------------------------------------------------
+
+enum Role {
+  CUSTOMER
+  ADMIN
+}
+
+model User {
+  id            String    @id @default(cuid())
+  email         String    @unique
+  passwordHash  String
+  role          Role      @default(CUSTOMER)
+  emailVerified DateTime?
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+
+  profile       Profile?
+  orders        Order[]
+  downloads     Download[]
+  reviews       Review[]
+  notifications Notification[]
+  sessions      Session[]
+  passwordResetTokens PasswordResetToken[]
+  seller        Seller?
+
+  @@index([email])
+}
+
+model Profile {
+  id        String   @id @default(cuid())
+  userId    String   @unique
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  firstName String?
+  lastName  String?
+  phone     String?
+  country   String?
+  updatedAt DateTime @updatedAt
+}
+
+model Session {
+  id        String   @id @default(cuid())
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  token     String   @unique
+  expiresAt DateTime
+  createdAt DateTime @default(now())
+
+  @@index([userId])
+}
+
+model PasswordResetToken {
+  id        String   @id @default(cuid())
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  tokenHash String   @unique
+  expiresAt DateTime
+  usedAt    DateTime?
+  createdAt DateTime @default(now())
+
+  @@index([userId])
+}
+
+// ---------------------------------------------------------------------------
+// SELLERS (marketplace) — admin-approved third-party sellers
+// ---------------------------------------------------------------------------
+
+enum SellerStatus {
+  PENDING
+  APPROVED
+  REJECTED
+  SUSPENDED
+}
+
+model Seller {
+  id             String       @id @default(cuid())
+  userId         String       @unique
+  user           User         @relation(fields: [userId], references: [id])
+  businessName   String
+  whatsappNumber String       // no +, no spaces (wa.me format) — shown on this seller's products
+  description    String?
+  status         SellerStatus @default(PENDING)
+  createdAt      DateTime     @default(now())
+  updatedAt      DateTime     @updatedAt
+
+  products       Product[]
+  whatsappOrders WhatsappOrder[]
+
+  @@index([status])
+}
+
+// ---------------------------------------------------------------------------
+// CATALOG
+// ---------------------------------------------------------------------------
+
+enum ProductStatus {
+  DRAFT
+  PUBLISHED
+  ARCHIVED
+}
+
+model Category {
+  id       String    @id @default(cuid())
+  name     String
+  slug     String    @unique
+  products Product[]
+
+  @@index([slug])
+}
+
+model Product {
+  id               String        @id @default(cuid())
+  name             String
+  slug             String        @unique
+  description      String
+  shortDescription String
+  price            Decimal       @db.Decimal(10, 2)
+  salePrice        Decimal?      @db.Decimal(10, 2)
+  categoryId       String
+  category         Category      @relation(fields: [categoryId], references: [id])
+  sellerId         String?       // null = platform-owned product (uses the global WhatsApp number)
+  seller           Seller?       @relation(fields: [sellerId], references: [id])
+  imageUrl         String?
+  externalLink     String?       // optional external link (seller site, demo, etc.) shown on the product page
+  status           ProductStatus @default(DRAFT)
+  isFeatured       Boolean       @default(false)
+  isPopular        Boolean       @default(false)
+  fileFormat       String?
+  fileSizeLabel    String?
+  compatibility    String?
+  stock            Int?          // null = unlimited (typical for digital goods)
+  isSingleLicense  Boolean       @default(true) // prevents qty > 1 in cart
+  createdAt        DateTime      @default(now())
+  updatedAt        DateTime      @updatedAt
+
+  files       ProductFile[]
+  orderItems  OrderItem[]
+  whatsappOrderItems WhatsappOrderItem[]
+  reviews     Review[]
+  couponProducts CouponProduct[]
+
+  @@index([slug])
+  @@index([status])
+  @@index([categoryId])
+  @@index([sellerId])
+}
+
+// The actual deliverable file, stored in PRIVATE storage. Never expose path directly.
+model ProductFile {
+  id          String   @id @default(cuid())
+  productId   String
+  product     Product  @relation(fields: [productId], references: [id], onDelete: Cascade)
+  storageKey  String?  // private S3-compatible bucket key, if configured — never sent to client
+  fileData    Bytes?   // fallback: file stored directly in the database when no S3 storage is set up
+  fileName    String
+  mimeType    String?
+  sizeBytes   Int
+  createdAt   DateTime @default(now())
+
+  downloads Download[]
+
+  @@index([productId])
+}
+
+// ---------------------------------------------------------------------------
+// ORDERS & PAYMENTS
+// ---------------------------------------------------------------------------
+
+enum OrderStatus {
+  PENDING
+  PAID
+  PROCESSING
+  COMPLETED
+  FAILED
+  REFUNDED
+  CANCELLED
+}
+
+model Order {
+  id          String      @id @default(cuid())
+  userId      String
+  user        User        @relation(fields: [userId], references: [id])
+  status      OrderStatus @default(PENDING)
+  subtotal    Decimal     @db.Decimal(10, 2)
+  discount    Decimal     @db.Decimal(10, 2) @default(0)
+  total       Decimal     @db.Decimal(10, 2)
+  couponId    String?
+  coupon      Coupon?     @relation(fields: [couponId], references: [id])
+  customerName  String
+  customerEmail String
+  customerPhone String?
+  country       String?
+  createdAt   DateTime    @default(now())
+  updatedAt   DateTime    @updatedAt
+
+  items    OrderItem[]
+  payments Payment[]
+  downloads Download[]
+  couponUsages CouponUsage[]
+
+  @@index([userId])
+  @@index([status])
+}
+
+model OrderItem {
+  id        String  @id @default(cuid())
+  orderId   String
+  order     Order   @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  productId String
+  product   Product @relation(fields: [productId], references: [id])
+  quantity  Int     @default(1)
+  unitPrice Decimal @db.Decimal(10, 2)
+
+  @@index([orderId])
+  @@index([productId])
+}
+
+enum PaymentStatus {
+  PENDING
+  PROCESSING
+  PAID
+  FAILED
+  CANCELLED
+}
+
+// Provider is intentionally generic — swap/add Stripe, Mobile Money, etc.
+model Payment {
+  id              String        @id @default(cuid())
+  orderId         String
+  order           Order         @relation(fields: [orderId], references: [id])
+  provider        String        // e.g. "stripe", "mobile_money"
+  providerRef     String?       // external payment intent / transaction id
+  status          PaymentStatus @default(PENDING)
+  amount          Decimal       @db.Decimal(10, 2)
+  currency        String        @default("XOF")
+  rawWebhookEvent Json?
+  createdAt       DateTime      @default(now())
+  updatedAt       DateTime      @updatedAt
+
+  @@index([orderId])
+  @@index([providerRef])
+}
+
+// ---------------------------------------------------------------------------
+// SECURE DIGITAL DELIVERY
+// ---------------------------------------------------------------------------
+
+model Download {
+  id             String    @id @default(cuid())
+  userId         String
+  user           User      @relation(fields: [userId], references: [id])
+  orderId        String
+  order          Order     @relation(fields: [orderId], references: [id])
+  productFileId  String
+  productFile    ProductFile @relation(fields: [productFileId], references: [id])
+  token          String    @unique // random, unguessable
+  expiresAt      DateTime
+  maxDownloads   Int       @default(5)
+  downloadCount  Int       @default(0)
+  createdAt      DateTime  @default(now())
+
+  @@index([userId])
+  @@index([orderId])
+  @@index([token])
+}
+
+// ---------------------------------------------------------------------------
+// WHATSAPP ORDERS (current primary purchase flow — manually confirmed by admin)
+// ---------------------------------------------------------------------------
+
+enum WhatsappOrderStatus {
+  NEW_REQUEST     // Nouvelle demande
+  PAYMENT_PENDING // Paiement en attente
+  PAID            // Payé
+  DELIVERED       // Produit envoyé
+  COMPLETED       // Terminée
+  CANCELLED       // Annulée
+}
+
+// Created either automatically (best-effort, when the buyer is logged in)
+// or manually by an admin from /admin/whatsapp-orders, since the actual
+// purchase conversation and payment happen outside the platform.
+model WhatsappOrder {
+  id              String              @id @default(cuid())
+  customerName    String
+  whatsappNumber  String
+  customerEmail   String?
+  status          WhatsappOrderStatus @default(NEW_REQUEST)
+  total           Decimal             @db.Decimal(10, 2)
+  notes           String?
+  sellerId        String?             // null = logged by the platform admin
+  seller          Seller?             @relation(fields: [sellerId], references: [id])
+  telegramChatId  String?             // set when the order came from the customer Telegram bot — enables auto-delivery
+  createdAt       DateTime            @default(now())
+  updatedAt       DateTime            @updatedAt
+
+  items WhatsappOrderItem[]
+
+  @@index([status])
+  @@index([whatsappNumber])
+  @@index([sellerId])
+}
+
+model WhatsappOrderItem {
+  id              String        @id @default(cuid())
+  whatsappOrderId String
+  whatsappOrder   WhatsappOrder @relation(fields: [whatsappOrderId], references: [id], onDelete: Cascade)
+  productId       String?
+  product         Product?      @relation(fields: [productId], references: [id])
+  productName     String        // snapshot, in case product is later renamed/removed
+  price           Decimal       @db.Decimal(10, 2)
+
+  @@index([whatsappOrderId])
+}
+
+// ---------------------------------------------------------------------------
+// COUPONS
+// ---------------------------------------------------------------------------
+
+enum CouponType {
+  PERCENTAGE
+  FIXED
+}
+
+model Coupon {
+  id              String     @id @default(cuid())
+  code            String     @unique
+  type            CouponType
+  value           Decimal    @db.Decimal(10, 2)
+  expiresAt       DateTime?
+  maxUses         Int?
+  minOrderAmount  Decimal?   @db.Decimal(10, 2)
+  createdAt       DateTime   @default(now())
+
+  orders    Order[]
+  usages    CouponUsage[]
+  products  CouponProduct[]
+
+  @@index([code])
+}
+
+model CouponProduct {
+  id        String  @id @default(cuid())
+  couponId  String
+  coupon    Coupon  @relation(fields: [couponId], references: [id], onDelete: Cascade)
+  productId String
+  product   Product @relation(fields: [productId], references: [id], onDelete: Cascade)
+
+  @@unique([couponId, productId])
+}
+
+model CouponUsage {
+  id       String   @id @default(cuid())
+  couponId String
+  coupon   Coupon   @relation(fields: [couponId], references: [id])
+  orderId  String
+  order    Order    @relation(fields: [orderId], references: [id])
+  usedAt   DateTime @default(now())
+
+  @@index([couponId])
+}
+
+// ---------------------------------------------------------------------------
+// REVIEWS
+// ---------------------------------------------------------------------------
+
+model Review {
+  id        String   @id @default(cuid())
+  productId String
+  product   Product  @relation(fields: [productId], references: [id], onDelete: Cascade)
+  userId    String
+  user      User     @relation(fields: [userId], references: [id])
+  rating    Int      // 1-5
+  comment   String
+  isApproved Boolean @default(false)
+  createdAt DateTime @default(now())
+
+  @@index([productId])
+}
+
+// ---------------------------------------------------------------------------
+// WHATSAPP AUTO-REPLY BOT (unofficial, session persistence)
+// ---------------------------------------------------------------------------
+
+model WhatsappBotSession {
+  id        String   @id @default(cuid())
+  key       String   @unique
+  value     Json
+  updatedAt DateTime @updatedAt
+}
+
+// ---------------------------------------------------------------------------
+// NOTIFICATIONS
+// ---------------------------------------------------------------------------
+
+model Notification {
+  id        String   @id @default(cuid())
+  userId    String
+  user      User     @relation(fields: [userId], references: [id])
+  type      String
+  message   String
+  isRead    Boolean  @default(false)
+  createdAt DateTime @default(now())
+
+  @@index([userId])
+}
